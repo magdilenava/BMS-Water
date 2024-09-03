@@ -1,0 +1,935 @@
+### GS Skript 13.08.24
+### BMS Analysis non linear exploration  Version 2
+### Exploration 
+
+library(tidyverse)
+library(ggpubr)
+# load extra packages for easy color handling 
+library(RColorBrewer)
+library(dendextend)
+
+setwd("C:/Users/grego/Documents/Studium/EMMA_BZ/EURAC/") # set wd
+
+
+bms_sub_wide <- read.csv("Output/bms_wide_abundance_per_site.csv") # read table
+setwd("~/BMS/2.Analysis/GS") 
+bms_sub_wide <- read.csv("~/BMS/2.Analysis/GS/bms_wide_abundance_per_site.csv")
+## wide format table of abundances, the base of this script 
+# View(bms_sub_wide)
+
+
+### PREPARE DATA --------------------------------------------------------------
+
+# make eventID rowname and delete col1 to have only numeric cells
+rownames(bms_sub_wide) <- bms_sub_wide[,1] 
+bms_sub_wide <- bms_sub_wide %>% select(-1)
+# bms_sub_wide[1:10,1:3] # see table
+
+
+## transform to log version 
+# create duplicate
+log_bms <- bms_sub_wide
+# log_bms[1:10,1:3] 
+# use log1p() to avoid math error with O 
+log_bms <- log1p(log_bms) # apply log to df
+
+
+# create qualitative version of base df 
+q_bms <- bms_sub_wide
+# if a cell contains a value other than 0, make it 1 
+# >> only 0 and 1 in df (1 = appears, 0 = doesn't appear) 
+for (i in 1:ncol(q_bms)) {
+  q_bms[which(q_bms[,i] != 0),i] <- 1
+}
+
+
+### Do some base analysis -----------------------------------------------------
+
+# check for normal distribution 
+normal <- NULL
+non_normal <- NULL
+for (i in 1:ncol(bms_sub_wide)) {
+  test <- shapiro.test(bms_sub_wide[,i])
+  if (test$p.value > 0.05) {
+    normal[length(normal)+1] <- colnames(log_bms)[i]
+  } else {
+    non_normal[length(non_normal)+1] <- colnames(log_bms)[i]
+  }
+}
+length(normal)
+length(non_normal)
+## all not normal distributed 
+
+## see if log version has a different outcome 
+normal <- NULL
+non_normal <- NULL
+for (i in 1:ncol(log_bms)) {
+  test <- shapiro.test(log_bms[,i])
+  if (test$p.value > 0.05) {
+    normal[length(normal)+1] <- colnames(log_bms)[i]
+  } else {
+    non_normal[length(non_normal)+1] <- colnames(log_bms)[i]
+  }
+}
+length(normal)
+length(non_normal)
+## all not normal distributed 
+rm(normal, non_normal, test)
+
+
+
+# calculate median and mean for each variable (Taxa) in the dfs 
+
+# get median and mean values for each column of wide df (bms_sub_wide)
+mean_base <- NULL 
+for (i in 1:ncol(bms_sub_wide)) {
+  mean_base[i] <- mean(bms_sub_wide[,i])
+}
+median_base <- NULL 
+for (i in 1:ncol(bms_sub_wide)) {
+  median_base[i] <- median(bms_sub_wide[,i])
+}
+
+# get median and mean values for each column of log df (log_bms)
+mean_log <- NULL 
+for (i in 1:ncol(log_bms)) {
+  mean_log[i] <- mean(log_bms[,i])
+}
+median_log <- NULL 
+for (i in 1:ncol(log_bms)) {
+  median_log[i] <- median(log_bms[,i])
+}
+
+
+# put computed values in one data frame 
+# add taxa names and numbers for easier plotting 
+metrics <- data.frame(Taxa = colnames(bms_sub_wide), 
+                      TaxaID = c(1:ncol(bms_sub_wide)), 
+                      mean_base = mean_base, 
+                      median_base = median_base, 
+                      mean_log = mean_log, 
+                      median_log = median_log)
+
+rm(mean_base, median_base, mean_log, median_log)
+
+# plot mean and median values together 
+# expectation: drastic differences in non-log df lead to strong offset in mean and median values for some species 
+ggplot(data = metrics, aes(TaxaID, mean_base)) +
+  geom_point(size=1.2) +
+  geom_point(aes(TaxaID, median_base), color="red", size=1.2)
+
+ggplot(data = metrics, aes(TaxaID, mean_log)) +
+  geom_point(size=1.2) +
+  geom_point(aes(TaxaID, median_log), color="red", size=1.2)
+
+# for the log df, values are less extremely deviated, which can be advantageous in analysis 
+## keep on working with log-df 
+
+#* this step outlines kind of obviously expected structures in the data
+#* doing a normality test and plotting the metrics shows that the distribution is far from normality
+#* there is just wayy too many zeros in the samples
+
+
+
+
+
+
+### LOG Correlation -----------------------------------------------------------
+##### Taxa --------------------------------------------------------------------
+
+#* as a first step a standard correlation matrix would make sense 
+#* In this data set though, the number of columns is too high to provide an overview 
+#* hence, finding another approach 
+#* 
+#* for loop collecting the values of cols (Taxa) correlations 
+
+
+cor_taxa <- NULL # initiate variable for collecting values 
+for (i in 1:ncol(log_bms)) { # loop over cols 1
+  for (k in 1:ncol(log_bms)) { # loop over cols 2
+    cor_taxa[length(cor_taxa)+1] <- colnames(log_bms)[i] # get taxa 1
+    cor_taxa[length(cor_taxa)+1] <- colnames(log_bms)[k] # get taxa 2
+    cor_taxa[length(cor_taxa)+1] <- cor(log_bms[,i], log_bms[,k], method = "spearman") # get cor value of the two taxa (cols in log abundance df)
+  }
+}
+
+# transfer collected values in a matrix with 3 cols (2 for each taxa, one for the cor value)
+cor_taxa_df <- matrix(cor_taxa, ncol = 3, byrow = T)
+# convert to df 
+cor_taxa_df <- as.data.frame(cor_taxa_df) %>% rename(taxa1 = V1, taxa2 = V2, cor = V3)
+
+
+# remove duplicates
+cor_taxa_df <- cor_taxa_df %>% mutate(var_order = paste(taxa1, taxa2) %>% 
+                                        strsplit(split = ' ') %>%
+                map_chr( ~ sort(.x) %>% paste(collapse = ' '))) %>%
+                mutate(cnt = 1) %>% group_by(var_order) %>%
+                mutate(cumsum = cumsum(cnt)) %>% filter(cumsum != 2) %>% ungroup %>%
+                select(-var_order, -cnt, -cumsum) 
+
+# remove lines where taxa 1 and taxa 2 are the same 
+cor_taxa_df <- cor_taxa_df %>% filter(taxa1 != taxa2)
+
+max(cor_taxa_df$cor); min(cor_taxa_df$cor) # not numeric! 
+cor_taxa_df$cor <- as.numeric(cor_taxa_df$cor)
+max(cor_taxa_df$cor); min(cor_taxa_df$cor) # proper negative correlations don't exist 
+
+# filter for correlations that are high
+cor_taxa_high <- cor_taxa_df %>% filter(cor>0.7)
+
+cor_taxa_high[2,] # see one of the high samples
+ggplot(log_bms, aes(Bivalvia_Sphaeriidae_NA_NA_NA , Hirudinea_Erpobdellidae_NA_NA_NA )) +
+  geom_point(col="red", alpha=.2) # plot it to get an impression (from original log df)
+
+# well ... it's kind of looking good, but mainly sampling sites where both taxa are not found are dominant >> as expected
+
+
+
+#* relevance of this section: understand the relation of the different taxa better
+#* which taxa are expected to occur, if a certain taxa can be found
+
+
+
+##### Sites -------------------------------------------------------------------
+
+# repeat the section above (correlation of taxa) for sites 
+
+log_bms_t <- as.data.frame(t(log_bms)) #transpose to have sites as cols 
+
+cor_sites <- NULL 
+for (i in 1:ncol(log_bms_t)) {
+  for (k in 1:ncol(log_bms_t)) {
+    cor_sites[length(cor_sites)+1] <- colnames(log_bms_t)[i] # site 1
+    cor_sites[length(cor_sites)+1] <- colnames(log_bms_t)[k] # site 2
+    cor_sites[length(cor_sites)+1] <- cor(log_bms_t[,i], log_bms_t[,k], method = "spearman") # correlation of the two sites (cols in transposed log abundance df)
+  }
+}
+
+cor_sites_df <- matrix(cor_sites, ncol = 3, byrow = T) # put values in matrix, 3 cols 
+cor_sites_df <- as.data.frame(cor_sites_df) %>% rename(site1 = V1, site2 = V2, cor = V3) # change into df and rename cols 
+
+
+# remove duplicates 
+cor_sites_df <- cor_sites_df %>% mutate(var_order = paste(site1, site2) %>% strsplit(split = ' ') %>%
+                                        map_chr( ~ sort(.x) %>% paste(collapse = ' '))) %>%
+  mutate(cnt = 1) %>% group_by(var_order) %>%
+  mutate(cumsum = cumsum(cnt)) %>% filter(cumsum != 2) %>% ungroup %>%
+  select(-var_order, -cnt, -cumsum) 
+
+# remove lines where site 1 and site 2 are thame 
+cor_sites_df <- cor_sites_df %>% filter(site1 != site2)
+
+cor_sites_df$cor <- as.numeric(cor_sites_df$cor)
+min(cor_sites_df$cor); max(cor_sites_df$cor) # no negative correlations 
+
+# filter for high correlations 
+cor_sites_high <- cor_sites_df %>% filter(cor > 0.6)
+
+cor_sites_high[2,] # see some sample
+ggplot(log_bms_t, aes(log_bms_t$'12352_1' , log_bms_t$'12352_6')) +
+  geom_point(col="red", alpha=.25) # plot it (from transposed log df)
+
+# well ... looks almost like a valid linear dependency, low values dominate 
+
+
+
+### see which stream type has the most sites that correlate in their log-abundance values
+
+# add two cols, (1) indicating if the sites of a line belong to the same stream type and 
+# (2) containing the stream type if (1) is TRUE
+cor_sites_high <- cor_sites_high %>% mutate(same_type = str_sub(site1, 1, 5) == str_sub(site2, 1, 5)) %>%
+  mutate(type = case_when(same_type == T ~ str_sub(site1, 1,5), 
+                          same_type == F ~ NA))
+
+# calculate the number of correlating pairs of sites per stream type 
+n_sites_cor <- cor_sites_high %>% group_by(type) %>% summarize(n()) %>% ungroup %>% rename(n_correlating_sites = 'n()') %>% drop_na()
+
+# plot the result 
+ggplot(n_sites_cor, aes(type, n_correlating_sites)) +
+  geom_point()
+
+
+
+
+### Qualitative Correlations -------------------------------------------------
+##### Taxa --------------------------------------------------------------------
+
+# repeat procedure from above for the qualitative data 
+
+# get correlation of qualitative abundances between each col (taxa) 
+q_cor_taxa <- NULL 
+for (i in 1:ncol(q_bms)) {
+  for (k in 1:ncol(q_bms)) {
+    q_cor_taxa[length(q_cor_taxa)+1] <- colnames(q_bms)[i]
+    q_cor_taxa[length(q_cor_taxa)+1] <- colnames(q_bms)[k]
+    q_cor_taxa[length(q_cor_taxa)+1] <- cor(q_bms[,i], q_bms[,k], method = "spearman") 
+  }
+} # sd == 0 throwing warnings
+
+q_cor_taxa_df <- matrix(q_cor_taxa, ncol = 3, byrow = T)
+q_cor_taxa_df <- as.data.frame(q_cor_taxa_df) %>% rename(taxa1 = V1, taxa2 = V2, cor = V3)
+
+
+# remove duplicates 
+q_cor_taxa_df <- q_cor_taxa_df %>% mutate(var_order = paste(taxa1, taxa2) %>% strsplit(split = ' ') %>%
+                                          map_chr( ~ sort(.x) %>% paste(collapse = ' '))) %>%
+  mutate(cnt = 1) %>% group_by(var_order) %>%
+  mutate(cumsum = cumsum(cnt)) %>% filter(cumsum != 2) %>% ungroup %>%
+  select(-var_order, -cnt, -cumsum) 
+
+q_cor_taxa_df <- q_cor_taxa_df %>% filter(taxa1 != taxa2)
+
+q_cor_taxa_df$cor <- as.numeric(q_cor_taxa_df$cor)
+min(q_cor_taxa_df$cor); max(q_cor_taxa_df$cor) # oh, guess NAs exist 
+q_cor_taxa_df <- q_cor_taxa_df %>% drop_na()
+
+q_cor_taxa_df$cor <- as.numeric(q_cor_taxa_df$cor)
+min(q_cor_taxa_df$cor); max(q_cor_taxa_df$cor) # both, high pos and neg cor exist 
+
+q_cor_taxa_high <- q_cor_taxa_df %>% filter(cor > 0.7 | cor < -(0.7))
+
+q_cor_taxa_high[2,] # some sample
+ggplot(q_bms, aes(Bivalvia_Sphaeriidae_NA_NA_NA, Hirudinea_Erpobdellidae_NA_NA_NA)) +
+  geom_point(col="red", alpha=.25) # plot it 
+## some species occur often together, others not: 
+
+q_cor_taxa_high %>% arrange(cor) %>% slice(1) # some sample
+ggplot(q_bms, aes(Hirudinea_Erpobdellidae_NA_NA_NA, Plecoptera_Nemouridae_Amphinemurinae_Protonemura_Protonemura.sp.)) +
+  geom_point(col="red", alpha=.25) # plot it 
+# only negative sample
+
+
+
+##### Sites -------------------------------------------------------------------
+
+# repeat procedure from above 
+
+q_bms_t <- as.data.frame(t(q_bms)) # transpose df to have sites as cols 
+
+# get correlation of qualitative abundances between each col (site) 
+q_cor_sites <- NULL 
+for (i in 1:ncol(q_bms_t)) {
+  for (k in 1:ncol(q_bms_t)) {
+    q_cor_sites[length(q_cor_sites)+1] <- colnames(q_bms_t)[i]
+    q_cor_sites[length(q_cor_sites)+1] <- colnames(q_bms_t)[k]
+    q_cor_sites[length(q_cor_sites)+1] <- cor(q_bms_t[,i], q_bms_t[,k], method = "spearman") 
+  }
+} 
+
+q_cor_sites_df <- matrix(q_cor_sites, ncol = 3, byrow = T)
+q_cor_sites_df <- as.data.frame(q_cor_sites_df) %>% rename(site1 = V1, site2 = V2, cor = V3)
+
+
+# remove duplicates 
+q_cor_sites_df <- q_cor_sites_df %>% mutate(var_order = paste(site1, site2) %>% strsplit(split = ' ') %>%
+                                              map_chr( ~ sort(.x) %>% paste(collapse = ' '))) %>%
+  mutate(cnt = 1) %>% group_by(var_order) %>%
+  mutate(cumsum = cumsum(cnt)) %>% filter(cumsum != 2) %>% ungroup %>%
+  select(-var_order, -cnt, -cumsum) 
+
+q_cor_sites_df <- q_cor_sites_df %>% filter(site1 != site2)
+
+q_cor_sites_df$cor <- as.numeric(q_cor_sites_df$cor)
+min(q_cor_sites_df$cor); max(q_cor_sites_df$cor) # just positive correlations relevant 
+
+q_cor_sites_high <- q_cor_sites_df %>% filter(cor > 0.6)
+
+q_cor_sites_high[2,] # some sample
+ggplot(q_bms_t, aes(q_bms_t$'12352_1' ,q_bms_t$'12352_6')) +
+  geom_point(col="red", alpha=.25) # plot it 
+## visually not making too much sense
+
+
+
+### see which stream type has the most sites that correlate in their qualitative abundances
+
+# add two cols, one indicating if site1 and site2 are of the same tream type, 
+# the other one containing the stream type if it's the same for site 1 and 2 
+q_cor_sites_high <- q_cor_sites_high %>% mutate(same_type = str_sub(site1, 1, 5) == str_sub(site2, 1, 5)) %>%
+  mutate(type = case_when(same_type == T ~ str_sub(site1, 1,5), 
+                          same_type == F ~ NA))
+# get number of correlating pairs of sites per stream type 
+n_sites_cor_q <- q_cor_sites_high %>% group_by(type) %>% summarize(n()) %>% ungroup %>% rename(n = 'n()') %>% drop_na()
+
+# plot it 
+ggplot(n_sites_cor_q, aes(type, n)) +
+  geom_point()
+
+
+
+### add plots of quali and quanti analysis 
+all(n_sites_cor_q$type == n_sites_cor$type) 
+ggplot(n_sites_cor %>% bind_cols(n_q = n_sites_cor_q$n), aes(type, n_correlating_sites)) +
+  geom_point() +
+  geom_point(aes(type, n_q), color = "red") +
+  ggtitle("Number of correlating sites per stream type", 
+          subtitle = "Comparison between quanitative (black) and qualitative (red)")
+# shows the same patterns, but less extreme in qualitative regard 
+
+
+
+
+
+
+
+###############################################################################
+### REDUCE DEMENSIONALITY -----------------------------------------------------
+
+##### t-SNE ---------------------------------------------------------------------
+
+library(Rtsne)
+## this method should be executed several times, since every run computes different results 
+
+# compute t-SNE on df of log abundances and turn into df 
+tsne_log <- Rtsne(log_bms, dims = 2, perplexity = 10)
+tsne_df <- as.data.frame(tsne_log$Y)
+
+# add col with information on stream type of each sample point 
+tsne_df <- tsne_df %>% mutate(stream = as.factor(str_sub(rownames(log_bms),1,5)))
+
+# plot it with sample points color-coded by stream type 
+ggplot(tsne_df, aes(V1, V2)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("t-SNE Plot perplex10")
+
+
+## repeat process with different values for perplexity 
+
+# try higher perplexity 
+tsne_log <- Rtsne(log_bms, dims = 2, perplexity = 15)
+tsne_df <- tsne_df %>% bind_cols('p15_x' = tsne_log$Y[,1], 
+                                 'p15_y' = tsne_log$Y[,2])
+tsne_df <- tsne_df %>% rename(p10_x = V1, p10_y = V2)
+ggplot(tsne_df, aes(p15_x, p15_y)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("t-SNE Plot perplex15")
+
+# try lower perplexity 
+tsne_log <- Rtsne(log_bms, dims = 2, perplexity = 6)
+tsne_df <- tsne_df %>% bind_cols('p6_x' = tsne_log$Y[,1], 
+                                 'p6_y' = tsne_log$Y[,2])
+ggplot(tsne_df, aes(p6_x, p6_y)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("t-SNE Plot perplex6")
+
+
+tsne_log <- Rtsne(log_bms, dims = 2, perplexity = 4)
+tsne_df <- tsne_df %>% bind_cols('p4_x' = tsne_log$Y[,1], 
+                                 'p4_y' = tsne_log$Y[,2])
+ggplot(tsne_df, aes(p4_x, p4_y)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("t-SNE Plot perplex4")
+
+
+tsne_log <- Rtsne(log_bms, dims = 2, perplexity = 3)
+tsne_df <- tsne_df %>% bind_cols('p3_x' = tsne_log$Y[,1], 
+                                 'p3_y' = tsne_log$Y[,2])
+ggplot(tsne_df, aes(p3_x, p3_y)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("t-SNE Plot perplex3")
+
+
+## lower perplexity captures the structure better 
+## but not always (run this section several times)
+## higher perplexity creates plots that are visually similar to other dimensionality reduction methods 
+
+# add a cluster 
+ggscatter(tsne_df, x = "p15_x", y = "p15_y", 
+          color = "stream",
+          palette = "jco",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex")
+ggscatter(tsne_df, x = "p4_x", y = "p4_y", 
+          color = "stream",
+          palette = "jco",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex")
+
+
+
+
+### UMAP ----------------------------------------------------------------------
+
+# should be able to conserve the structures of the data better, but form less clusters 
+
+# as t-SNE, several runs might result in different results 
+
+library(umap)
+
+# compute UMAP on log bms data of abundances 
+# Resulting in a coordinate (2D) for each sample point 
+umap_log <- umap(log_bms)
+umap_df <- as.data.frame(umap_log$layout) 
+# add information on stream type per sampling point for better plotting 
+umap_df <- umap_df %>% mutate(stream = as.factor(str_sub(rownames(umap_df),1,5)))
+
+
+# UMAP as sophisticated method that works on original data 
+# hence, try it on the non-log data 
+umap_log <- umap(bms_sub_wide)
+# add results to the data frame from above containing the UMAP results 
+umap_df <- umap_df %>% bind_cols('base_umap_x' = umap_log$layout[,1], 
+                                 'base_umap_y' = umap_log$layout[,2])
+umap_df <- umap_df %>% rename(log_umap_x = V1, log_umap_y = V2)
+
+# plot the 2 results 
+ggplot(umap_df, aes(base_umap_x, base_umap_y)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("UMAP Plot base")
+ggplot(umap_df, aes(log_umap_x, log_umap_y)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("UMAP Plot log")
+
+## both graphs don't show a good overview of the structure
+## could be because original structure is preserved better than in t-SNE
+## >> since the data is not containing very clear patters, the plot is not clear (t-SNE is more manipulative) 
+
+
+## use standardized values, should be better on UMAP 
+umap_log <- bms_sub_wide %>% scale() %>% umap() 
+umap_df <- umap_df %>% bind_cols('base_scaled_umap_x' = umap_log$layout[,1], 
+                                 'base_scaled_umap_y' = umap_log$layout[,2])
+ggplot(umap_df, aes(base_scaled_umap_x, base_scaled_umap_y)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("UMAP Plot base scaled")
+# not at all, what a scatter
+
+umap_log <- log_bms %>% scale() %>% umap() 
+umap_df <- umap_df %>% bind_cols('log_scaled_umap_x' = umap_log$layout[,1], 
+                                 'log_scaled_umap_y' = umap_log$layout[,2])
+ggplot(umap_df, aes(log_scaled_umap_x, log_scaled_umap_y)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("UMAP Plot log scaled")
+# another great scatter 
+
+ggscatter(umap_df, x = "log_scaled_umap_x", y = "log_scaled_umap_y", 
+          color = "stream",
+          #palette = "jco",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex")
+# pretty squished into the center 
+## not the best method to understand relations in the BMS data 
+## see how it performs on q-df
+
+
+# UMAP on qualitative data
+
+umap_log <- q_bms %>% umap() 
+# add result cols to the existing umap df 
+umap_df <- umap_df %>% bind_cols('q_umap_x' = umap_log$layout[,1], 
+                                 'q_umap_y' = umap_log$layout[,2]) 
+
+# plot it color coded 
+ggplot(umap_df, aes(q_umap_x, q_umap_y)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("UMAP Plot log scaled")
+# has more structure, similar to log version 
+
+
+# umap on scaled data should be the way to go, but doesn't provide insight
+# parameter tuning of neighbors and distance could help 
+
+
+
+
+
+### K-PCA ---------------------------------------------------------------------
+# kernel for non-linear relations 
+
+library(kernlab)
+
+# save normalized log-data frame of abundance data 
+log_bms_scaled <- scale(log_bms)
+log_bms_scaled <- log_bms_scaled %>% as.data.frame() 
+
+# try kernel-PCA with different kernel functions 
+
+
+
+## bessel 
+# perform kpca
+kpca_result <- kpca(x = as.matrix(log_bms_scaled), kernel = "besseldot", features = 2)
+# get 2D results in data frame
+kpca_df <- as.data.frame(predict(kpca_result, x = as.matrix(log_bms_scaled)))
+# rename cols and add stream type info 
+kpca_df <- kpca_df %>% rename(bessel_x = V1, bessel_y = V2) %>% 
+  mutate(stream = as.factor(str_sub(rownames(kpca_df), 1,5)))
+# plot the result 
+ggplot(kpca_df, aes(bessel_x, bessel_y)) + 
+  geom_point(aes(color = stream)) + ggtitle("Kernel PCA Plot Bessel")
+
+
+## Gaussian 
+# perform kpca with gaussian function (more standard)
+kpca_result <- kpca(x = as.matrix(log_bms_scaled), kernel = "rbfdot", features = 2)
+# add results to existing kpca df 
+kpca_df <- kpca_df %>% bind_cols(as.data.frame(predict(kpca_result, x = as.matrix(log_bms_scaled))))
+kpca_df <- kpca_df %>% rename(gauss_x = V1, gauss_y = V2) 
+# plot the new result
+ggplot(kpca_df, aes(gauss_x, gauss_y)) + 
+  geom_point(aes(color = stream)) + ggtitle("Kernel PCA Plot Gaussian")
+
+
+## Polynom 
+# perform kpca with polynom function as kernel 
+kpca_result <- kpca(x = as.matrix(log_bms_scaled), kernel = "polydot", 
+                    kpar = list(degree = 3, scale = 1, offset = 1), features = 2)
+# add new results to kpca-result df 
+kpca_df <- kpca_df %>% bind_cols(as.data.frame(predict(kpca_result, x = as.matrix(log_bms_scaled))))
+kpca_df <- kpca_df %>% rename(poly_x = V1, poly_y = V2)
+# plot the polynom result 
+ggplot(kpca_df, aes(poly_x, poly_y)) + 
+  geom_point(aes(color = stream)) + ggtitle("Kernel PCA Plot Polynom")
+## oha, lets delete the outliers to get a better picture 
+
+# detect outliers from plot
+kpca_df %>% filter(stream == 32132) %>% select(poly_x, poly_y) # IDs 32132_2, 32132_6  
+match(c("32132_2", "32132_6"), rownames(log_bms_scaled)) # rows 33, 37
+
+# compute again without outliers 
+kpca_result <- kpca(x = as.matrix(log_bms_scaled %>% slice(-c(33,37))), kernel = "polydot", 
+                    kpar = list(degree = 3, scale = 1, offset = 1), features = 2)
+# add second poly kpca result to df 
+kpca_df <- kpca_df %>% bind_cols(as.data.frame(predict(kpca_result, x = as.matrix(log_bms_scaled))))
+kpca_df <- kpca_df %>% rename(poly_x_2 = V1, poly_y_2 = V2)
+# plot new poly result 
+ggplot(kpca_df, aes(poly_x_2, poly_y_2)) + 
+  geom_point(aes(color = stream)) + ggtitle("Kernel PCA Plot Polynom 2")
+# still 2 strong outliers
+
+## instead of excluding the values in the computing, lets just focus the plot on the central point cloud 
+
+# filtering some values to look at the center of the plot 
+ggplot(kpca_df %>% filter(poly_x_2 > -5000) %>% filter(poly_y_2 < 50000)
+       , aes(poly_x_2, poly_y_2)) + 
+  geom_point(aes(color = stream)) + ggtitle("Kernel PCA Plot Polynom 2 focus")
+
+
+# still, no well readable patterns appear 
+
+# bessel also showed well, that stream type 31162 is different from others 
+
+
+
+### ISOMAP --------------------------------------------------------------------
+library(vegan)
+
+# isomap to be performed on scaled data 
+
+# compute distance matrix 
+dist_bms_log_s <- dist(log_bms_scaled)
+
+# Apply Isomap
+## play with k to find right fit 
+iso_bms_log_s <- isomap(dist_bms_log_s, k = 6, ndim = 2)
+# write result in a df for plotting 
+iso_coords <- as.data.frame(iso_bms_log_s$points)
+
+# add stream type info in new col
+iso_coords <- iso_coords %>% mutate(stream = as.factor(str_sub(rownames(iso_coords),1,5)))
+
+# Plot the results
+ggscatter(iso_coords, x = "Dim1", y = "Dim2", 
+          color = "stream",
+          palette = "jco",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex")
+
+# not helpful 
+
+
+### NMDS ----------------------------------------------------------------------
+
+# calculate distance matrix
+dist_log_bms <- dist(log_bms)
+# compute NMDS 
+nmds_bms <- metaMDS(dist_log_bms, k = 2, trymax = 300)
+#nmds_bms_3d <- metaMDS(dist_log_bms, k = 3, trymax = 100)
+#nmds_bms_3d$stress # pretty good at 0.12
+# consider 3D plot 
+
+nmds_bms$stress # check if lower than 0.2 ## 1.78 still good 
+# add result coordinate data to new df 
+nmds_result <- nmds_bms$points %>% as.data.frame()
+# add stream type as new col 
+nmds_result <- nmds_result %>% mutate(stream = as.factor(str_sub(rownames(nmds_result),1,5)))
+
+# plot the result 
+ggplot(nmds_result, aes(MDS1, MDS2)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("NMDS Plot")
+## looks like the result is not all over the place 
+# add ellipses 
+ggscatter(nmds_result, x = "MDS1", y = "MDS2", 
+          color = "stream",
+          palette = "jco",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex") +
+  ggtitle("NMDS on log abundance data")
+
+
+
+## what if stream type 31162 was cut out? 
+grep("31162", rownames(log_bms)) # 21 - 30
+
+# calculate subset of distance matrix
+dist_log_bms_sub <- dist(log_bms %>% slice(-c(21:30)))
+# compute NMDS 
+nmds_bms <- metaMDS(dist_log_bms_sub, k = 2, trymax = 300)
+#nmds_bms_3d <- metaMDS(dist_log_bms_sub, k = 3, trymax = 100)
+#nmds_bms_3d$stress # pretty good at 0.14
+# consider 3D plot 
+
+nmds_bms$stress # check if lower than 0.2 ## 0.199 not really good  
+# add result coordinate data to new df 
+
+nmds_result_sub <- nmds_bms$points %>% as.data.frame()
+nmds_result_sub <- nmds_result_sub %>% mutate(stream = as.factor(str_sub(rownames(nmds_result_sub),1,5)))
+
+# plot the subset result 
+ggplot(nmds_result_sub, aes(MDS1, MDS2)) + 
+  geom_point(aes(color = stream)) + 
+  ggtitle("NMDS Plot sub") 
+## not highly useful 
+
+
+
+### try on normalized data 
+# compute NMDS 
+nmds_bms <- metaMDS(dist_bms_log_s, k = 2, trymax = 300)
+#nmds_bms_3d <- metaMDS(dist_matrix, k = 3, trymax = 100)
+#nmds_bms_3d$stress # pretty low at 0.12
+
+nmds_bms$stress # check if lower than 0.2 ## 1.95 again worse than non-scaled data  
+## let it be 
+
+# look into 3D plotting 
+
+
+
+
+
+
+
+
+
+
+
+### PERMANOVA ----------------------------------------------------------------- 
+
+
+
+# have stream type in a single df
+streamtype <- as.data.frame(rownames(log_bms)) %>% rename(stream = 'rownames(log_bms)') %>% 
+  mutate(stream = str_sub(stream, 1,5))
+
+
+## permanova test 
+# on log data
+permanova_log <- adonis2(log_bms ~ stream, permutations = 999, data = streamtype, method="euclidean")
+permanova_log # see the outcome 
+
+# on non-log data 
+permanova_base <- adonis2(bms_sub_wide ~ stream, permutations = 999, data = streamtype, method = "euclidean")
+permanova_base # see the outcome 
+
+
+#* the grouping by stream types in the abundance bms data has significant p values, 
+#* but the R2 is really low - it can not be explained by the variables. 
+#* >> occurring species on sites are different between stream types, but can not be fully explained 
+#* 
+#* the results for the log-data are a little more promising (higher R2 value)
+#* 
+#* 
+#* the whole sample group of stream type 31162 is kind of its own 
+#* so lets see how the test responds to cutting out this stream type 
+#* 
+#* remove samples of 31162
+
+log_bms_reduced <- log_bms[!grepl("31162", rownames(log_bms)),] # remove 31162
+
+# create the streamtype data frame accordingly 
+streamtype_reduced <- as.data.frame(rownames(log_bms_reduced)) %>% 
+  rename(stream = 'rownames(log_bms_reduced)') %>% 
+  mutate(stream = str_sub(stream, 1,5))
+
+# perform test on reduced data 
+permanova_log_red <- adonis2(log_bms_reduced ~ stream, permutations = 999, 
+                             data = streamtype_reduced, method="euclidean")
+permanova_log_red # see the result 
+
+
+
+## repeat for non-log data 
+
+bms_reduced <- bms_sub_wide[!grepl("31162", rownames(bms_sub_wide)),] # create df 
+# perform permanova 
+permanova_red <- adonis2(bms_reduced ~ stream, permutations = 999, 
+                             data = streamtype_reduced, method="euclidean")
+permanova_red # see result 
+
+
+#* the R2 is even lower, while the p-value is still significant 
+#* 
+#* 
+
+
+### Pairwise comparison
+## perform a pairwise permanova to see differences between all the pairs 
+
+#install.packages('devtools')
+#library(devtools)
+#install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+library(pairwiseAdonis)
+
+
+
+pairwise_log <- pairwise.adonis(log_bms, streamtype$stream, sim.method="euclidean") # permanova 
+pairwise_log <- pairwise_log %>% as.data.frame() %>% select(-Df) %>% mutate(R2 = round(R2, 4)) # clean results
+pairwise_log # differences strongest on type 31162 (as expected), but overall wayy too low R2
+
+pairwise_base <- pairwise.adonis(bms_sub_wide, streamtype$stream, sim.method="euclidean")
+pairwise_base <- pairwise_base %>% as.data.frame() %>% select(-Df) %>% mutate(R2 = round(R2, 4))
+pairwise_base # very weak - noise of high abundance might disturb the structure 
+
+pairwise_q <- pairwise.adonis(q_bms, streamtype$stream, sim.method="euclidean")
+pairwise_q <- pairwise_q %>% as.data.frame() %>% select(-Df) %>% mutate(R2 = round(R2, 4))
+pairwise_q # very similar to log version, but lower R2s 
+
+
+
+#* conclusion on permanova tests: 
+#* there is a difference in the samples, but the grouping by stream types can not be explained well, 
+#* as very low R2 values indicate 
+#* 
+#* the comparison of single pairs shows that differences can not be explained between all groups 
+#* this is indicated by low R2 values all over, and mostly too high p-values 
+#* still, for streamtypes 31162 and 13133 the differences to other streamtypes are somewhat outstanding 
+#* 
+#* this can also be seen (partially) in the plotting result of the nmds analysis and other methods: 
+
+#NMDS
+ggscatter(nmds_result, x = "MDS1", y = "MDS2", 
+          color = "stream",
+          palette = "jco",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex") +
+  ggtitle("NMDS on log abundance data") +
+  theme(legend.position = "right")
+
+#T-SNE
+ggscatter(tsne_df, x = "p15_x", y = "p15_y", 
+          color = "stream",
+          palette = "jco",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex") +
+  ggtitle("t-SNE on log abundance data, perplexity=15") +
+  theme(legend.position = "right")
+
+
+
+
+## plot with only 3 streams colored, the rest grey 
+## 3 times 
+#T-SNE
+tsne1 <- ggscatter(tsne_df, x = "p15_x", y = "p15_y", 
+          color = "stream",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex") +
+  ggtitle("t-SNE on log abundance data 1", subtitle = "perplexity=15") +
+  theme(legend.position = "right") + 
+  scale_color_manual(breaks = unique(tsne_df$stream),
+                          values=c("red", "blue", "green", "grey", "grey", 
+                                   "grey", "grey", "grey", "grey"))
+
+tsne2 <- ggscatter(tsne_df, x = "p15_x", y = "p15_y", 
+          color = "stream",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex") +
+  ggtitle("t-SNE on log abundance data 2", subtitle = "perplexity=15") +
+  theme(legend.position = "right") + 
+  scale_color_manual(breaks = unique(tsne_df$stream),
+                     values=c("grey", "grey", "grey", "coral", "cyan3", 
+                              "forestgreen", "grey", "grey", "grey"))
+
+tsne3 <- ggscatter(tsne_df, x = "p15_x", y = "p15_y", 
+          color = "stream",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex") +
+  ggtitle("t-SNE on log abundance data 3", subtitle = "perplexity=15") +
+  theme(legend.position = "right") + 
+  scale_color_manual(breaks = unique(tsne_df$stream),
+                     values=c("grey", "grey", "grey", "grey", "grey", 
+                              "grey", "darkorange", "deepskyblue3", "darkolivegreen"))
+  
+
+
+### NMDS selected plotting 
+
+## plot with only 3 streams colored, the rest grey 
+## 3 times 
+#T-SNE
+nmds1 <- ggscatter(nmds_result, x = "MDS1", y = "MDS2", 
+          color = "stream",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex") +
+  ggtitle("NMDS on log abundance data 1") +
+  theme(legend.position = "right") + 
+  scale_color_manual(breaks = unique(tsne_df$stream),
+                     values=c("red", "blue", "green", "grey", "grey", 
+                              "grey", "grey", "grey", "grey"))
+
+nmds2 <- ggscatter(nmds_result, x = "MDS1", y = "MDS2", 
+          color = "stream",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex") +
+  ggtitle("NMDS on log abundance data 2") +
+  theme(legend.position = "right") + 
+  scale_color_manual(breaks = unique(tsne_df$stream),
+                     values=c("grey", "grey", "grey", "coral", "cyan3", 
+                              "forestgreen", "grey", "grey", "grey"))
+
+nmds3 <- ggscatter(nmds_result, x = "MDS1", y = "MDS2", 
+          color = "stream",
+          size = 1.5, 
+          ellipse = TRUE,
+          ellipse.type = "convex") +
+  ggtitle("NMDS on log abundance data 3") +
+  theme(legend.position = "right") + 
+  scale_color_manual(breaks = unique(tsne_df$stream),
+                     values=c("grey", "grey", "grey", "grey", "grey", 
+                              "grey", "darkorange", "deepskyblue3", "darkolivegreen"))
+
+  
+figure <- ggarrange(tsne1, nmds1, tsne2, nmds2, tsne3, nmds3,
+                    labels = c("A", "B", "C", "D", "E", "F"),
+                    ncol = 2, nrow = 3)
+
+# Opening Output
+pdf("Output/Graph_overview.pdf",  # File name
+    width = 8, height = 10.5, # plotting width and height (in) 
+    bg = "white",          # Background color
+    colormodel = "cmyk",    # Color model
+    paper = "A4")          # size
+
+# Plot
+figure
+
+# Closing the graphical device
+dev.off() 
+
+
+# Saving pairwise permanova result to Table 
+write.csv(pairwise_log, "Output/Pairwise_Permanova_log_abundance.csv")
